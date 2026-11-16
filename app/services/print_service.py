@@ -21,22 +21,39 @@ PRINT_RENDER_DPI = 216
 def list_printers() -> dict:
     flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
     printers = []
+
     for printer in win32print.EnumPrinters(flags):
         printers.append({"name": printer[2]})
 
-    default_printer = None
-    try:
-        default_printer = win32print.GetDefaultPrinter()
-    except Exception:
-        default_printer = None
+    default_printer = get_default_printer()
 
-    return {"printers": printers, "default_printer": default_printer}
+    try:
+        selected_printer = get_active_printer_name()
+    except Exception:
+        selected_printer = None
+
+    return {
+        "printers": printers,
+        "default_printer": default_printer,
+        "selected_printer": selected_printer,
+    }
 
 
 def print_order(order: Order) -> dict:
     pdf_path = generate_order_pdf(order)
-    printer_name = settings.printer_name.strip() or get_selected_printer_name()
-    print_pdf_as_images(pdf_path, printer_name)
+    printer_name = get_active_printer_name()
+
+    if not printer_name:
+        raise RuntimeError("No printer configured and no default Windows printer was found")
+
+    try:
+        print_pdf_as_images(pdf_path, printer_name)
+    finally:
+        try:
+            pdf_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     return {
         "mode": "pdf-to-image",
         "printer": printer_name,
@@ -45,7 +62,11 @@ def print_order(order: Order) -> dict:
 
 
 def print_test_page(printer_name: str | None = None) -> dict:
-    resolved_printer = printer_name or settings.printer_name.strip() or get_selected_printer_name()
+    if printer_name and not is_valid_printer(printer_name):
+        raise RuntimeError(f"Selected printer is not available in Windows: {printer_name}")
+
+    resolved_printer = printer_name or get_active_printer_name()
+
     if not resolved_printer:
         raise RuntimeError("No printer configured and no default Windows printer was found")
 
@@ -56,7 +77,7 @@ def print_test_page(printer_name: str | None = None) -> dict:
         pdf = canvas.Canvas(str(pdf_path), pagesize=LETTER)
         width, height = LETTER
         pdf.setFont("Helvetica-Bold", 26)
-        pdf.drawString(36, height - 60, "ORDERBRIDGE TEST PRINT")
+        pdf.drawString(36, height - 60, "TEST PRINT")
         pdf.setFont("Helvetica", 15)
         pdf.drawString(36, height - 100, f"Printer: {resolved_printer}")
         pdf.drawString(36, height - 130, "This page is a local print test.")
@@ -151,18 +172,55 @@ def get_default_printer() -> str | None:
         return None
 
 
-def get_selected_printer_name() -> str | None:
-    # Fallback order: persisted selection, then Windows default printer.
-    printer_name = None
+def get_available_printer_names() -> list[str]:
+    flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+    printer_names = []
+
+    for printer in win32print.EnumPrinters(flags):
+        printer_names.append(printer[2])
+
+    return printer_names
+
+
+def is_valid_printer(printer_name: str | None) -> bool:
+    if not printer_name:
+        return False
+
+    return printer_name in get_available_printer_names()
+
+
+def get_persisted_selected_printer() -> str | None:
     try:
         from app.db.session import SessionLocal
 
         db = SessionLocal()
         try:
-            printer_name = get_selected_printer(db).strip() or None
+            printer_name = get_selected_printer(db)
+            return printer_name.strip() or None
         finally:
             db.close()
     except Exception:
-        printer_name = None
+        return None
 
-    return printer_name or get_default_printer()
+
+def get_active_printer_name() -> str | None:
+    """
+    Priority order:
+    1. Printer selected from frontend / persisted setting
+    2. PRINTER_NAME from .env
+    3. Windows default printer
+    """
+
+    selected_printer = get_persisted_selected_printer()
+    if is_valid_printer(selected_printer):
+        return selected_printer
+
+    env_printer = settings.printer_name.strip() or None
+    if is_valid_printer(env_printer):
+        return env_printer
+
+    default_printer = get_default_printer()
+    if is_valid_printer(default_printer):
+        return default_printer
+
+    return None

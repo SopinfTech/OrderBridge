@@ -150,6 +150,22 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+
+let isAutoRefreshing = false;
+
 document.addEventListener("DOMContentLoaded", async () => {
   await Promise.all([loadHealth(), loadPrinters(), loadOrders()]);
+
+  setInterval(async () => {
+    if (isAutoRefreshing) return;
+
+    isAutoRefreshing = true;
+    try {
+      await Promise.all([loadHealth(), loadOrders()]);
+    } catch (error) {
+      console.error("Auto refresh failed:", error);
+    } finally {
+      isAutoRefreshing = false;
+    }
+  }, 3000);
 });

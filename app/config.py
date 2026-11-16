@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     goodbarber_sync_interval_seconds: int = 60
 
     auto_print_new_orders: bool = True
+    merchant_name: str = "Jalapeños Supermarket"
+    merchant_address_line1: str = "806 1st Ave"
+    merchant_address_line2: str = "ASBURY PARK, NJ 07712"
+    merchant_country: str = "UNITED STATES"
+    merchant_phone: str = "7324146411"
+    merchant_email: str = "asburystore@jalapenos-supermarket.com"
     print_pdf_dir: Path = Field(default=BASE_DIR / "storage" / "print_pdfs")
     printer_name: str = ""
     windows_print_action: str = "printto"

@@ -29,10 +29,22 @@ def normalize_goodbarber_order(payload: dict) -> dict:
         "customer_phone": source.get("phone") or customer.get("phone") or customer.get("phone_number") or "",
         "customer_email": source.get("email") or customer.get("email") or "",
         "customer_address": format_address(customer),
-        "payment_method": source.get("payment_method") or source.get("payment", {}).get("method") or "No especificado",
-        "payment_status": source.get("payment_status") or source.get("payment", {}).get("status") or "pendiente",
+        "payment_method": (
+            source.get("payment_method")
+            or source.get("payment_type")
+            or source.get("payment_mode")
+            or source.get("payment", {}).get("method")
+            or "No especificado"
+        ),
+        "payment_status": (
+            source.get("payment_status")
+            or source.get("payment", {}).get("status")
+            or source.get("status")
+            or "pendiente"
+        ),
         "fulfillment_method": (
             source.get("shipping_method")
+            or source.get("shipping_type")
             or source.get("fulfillment", {}).get("method")
             or source.get("delivery_method")
             or "No especificado"

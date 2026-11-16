@@ -1,305 +1,142 @@
 # OrderBridge Python
 
-Backend en Python para recibir pedidos de GoodBarber, guardarlos localmente, sincronizarlos en segundo plano y mandarlos a imprimir en Windows.
+Consulta la [guía técnica del proyecto](docs/GUIA_DEL_PROYECTO.md) para la arquitectura, el runtime embebido, la configuración, la API y las notas de operación.
 
-## Stack
+Local FastAPI app for syncing GoodBarber orders, storing them in SQLite, generating printable PDFs, and sending them to a Windows printer.
 
-- `FastAPI` para la API
-- `APScheduler` para la sincronizacion automatica
-- `SQLAlchemy + SQLite` para almacenamiento local
-- `ReportLab` para generar el PDF del pedido
-- `pywin32` para servicio local de Windows e impresion
-- `Pillow + pypdfium2` para renderizar el PDF antes de imprimir
+## What lives inside this folder
 
-## Flujo
+Everything needed to run the app is kept inside this project folder:
 
-1. GoodBarber envia un webhook o el scheduler consulta la API.
-2. El backend guarda la orden en SQLite.
-3. Si la orden sigue en estado local `new`, genera un PDF.
-4. El backend manda ese PDF a la impresora configurada en Windows.
-5. Si la impresion se acepta, cambia la orden a `printed`.
+- `python\` embedded Python runtime
+- `app\` backend source
+- `frontend\` local UI
+- `storage\` SQLite database and generated files
+- `logs\` runtime and service logs
 
-## Variables
+The goal is that you can copy this folder to another Windows machine, update `.env`, and reinstall the service from this same folder.
 
-Usa `.env.example` como base.
+## Run manually
 
-Variables clave:
-
-- `GOODBARBER_APP_ID`
-- `GOODBARBER_API_KEY`
-- `API_HOST`
-- `API_PORT`
-- `PRINTER_NAME`
-- `GOODBARBER_SYNC_ENABLED`
-- `GOODBARBER_SYNC_INTERVAL_SECONDS`
-
-Si `PRINTER_NAME` queda vacio, se intenta usar la impresora predeterminada de Windows.
-
-## Arranque manual
-
-Para ejecutar la API sin instalar servicio:
+For a foreground local run:
 
 ```bat
-run.bat
-```
-
-O manualmente:
-
-```bat
-py -3 -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy .env.example .env
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+run_embedded.bat
 ```
 
 Health check:
 
 ```powershell
-Invoke-WebRequest http://127.0.0.1:8000/api/health -UseBasicParsing
+curl.exe http://127.0.0.1:8000/api/health
 ```
 
-## Servicio de Windows
+## Windows service
 
-### Requisitos
+The recommended production mode is a local Windows service using the embedded Python runtime.
 
-- Windows
-- PowerShell o CMD abiertos como Administrador
-- Python instalado con `py -3`
-- Acceso local para crear el entorno virtual y el servicio
+### Why use the service
 
-### Instalacion recomendada
+- no black console window
+- keeps running independently of your user session
+- starts automatically with Windows
+- restarts automatically if it crashes
+- stays self-contained inside this folder
 
-1. Abrir PowerShell como Administrador.
-2. Entrar al proyecto:
+### Files
 
-```powershell
-cd D:\orders\python-orderbridge
-```
+- `windows_service.py`
+- `install_service.bat`
+- `uninstall_service.bat`
+- `start_service.bat`
+- `stop_service.bat`
+- `restart_service.bat`
+- `service_status.bat`
 
-3. Instalar el servicio:
+### Install
+
+Open `PowerShell` or `CMD` as Administrator in this folder and run:
 
 ```powershell
 .\install_service.bat
 ```
 
-4. Verificar el estado:
+This script:
+
+1. uses `python\python.exe`
+2. copies `pythonservice.exe` into `python\`
+3. copies the required `pywin32` helper DLLs into `python\`
+4. installs the `OrderBridge` service
+5. sets startup to automatic
+6. configures restart-on-failure
+7. starts the service
+
+### Daily service commands
 
 ```powershell
-sc.exe query OrderBridge
+.\service_status.bat
+.\start_service.bat
+.\stop_service.bat
+.\restart_service.bat
 ```
 
-5. Verificar la API:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8000/api/health -UseBasicParsing
-```
-
-Si todo esta bien, el servicio queda:
-
-- registrado como `OrderBridge`
-- en arranque automatico
-- con reinicio automatico si falla
-
-### Que hace `install_service.bat`
-
-El instalador hace esto:
-
-1. Entra al directorio actual del proyecto.
-2. Crea `.venv` si no existe.
-3. Instala dependencias.
-4. Detecta automaticamente la version de Python usada por el `venv`.
-5. Copia al root de `.venv` los binarios que `pythonservice.exe` necesita:
-
-- `pythonXY.dll`
-- `pythoncomXY.dll`
-- `pywintypesXY.dll`
-
-6. Borra una instalacion vieja del servicio si ya existia.
-7. Registra el servicio con `pythonservice.exe`.
-8. Fuerza los valores correctos de:
-
-- `ImagePath`
-- `PythonClass`
-
-9. Configura descripcion, autostart y restart-on-failure.
-10. Arranca el servicio.
-
-### Desinstalacion
+### Uninstall
 
 ```powershell
 .\uninstall_service.bat
 ```
 
-O manualmente:
+## Move to another machine
 
-```powershell
-sc.exe stop OrderBridge
-sc.exe delete OrderBridge
-```
+To run this on another Windows PC:
 
-## Operacion diaria
-
-Ver estado:
-
-```powershell
-sc.exe query OrderBridge
-```
-
-Arrancar:
-
-```powershell
-sc.exe start OrderBridge
-```
-
-Detener:
-
-```powershell
-sc.exe stop OrderBridge
-```
-
-Ver API:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8000/api/health -UseBasicParsing
-```
-
-## Logs utiles
-
-Los logs del servicio quedan en `logs/`:
-
-- `logs/service-boot.log`
-- `logs/service-error.log`
-- `logs/uvicorn.out.log`
-- `logs/uvicorn.err.log`
-
-Tambien conviene revisar el Visor de eventos de Windows:
-
-- `Application`
-- `System`
-- proveedor `Python Service`
-- proveedor `OrderBridge`
-
-## Problemas reales que aparecieron y como quedaron resueltos
-
-### 1. PowerShell no ejecuta `.bat` del directorio actual
-
-Sintoma:
-
-```powershell
-install_service.bat : The term 'install_service.bat' is not recognized...
-```
-
-Solucion:
+1. copy the full folder
+2. update `.env` if needed
+3. make sure the target printer exists on that machine
+4. open an Administrator terminal in the copied folder
+5. run:
 
 ```powershell
 .\install_service.bat
 ```
 
-### 2. `pywin32` no aceptaba `install --startup auto`
+Important:
 
-Sintoma:
+- the Windows service stores the current folder path when installed
+- if you move the folder later on the same machine, run:
 
-- solo imprimia el `Usage`
-- no instalaba el servicio
+```powershell
+.\uninstall_service.bat
+.\install_service.bat
+```
 
-Solucion aplicada:
+That refreshes the service registration to the new path.
 
-- usar `--startup=auto install`
+## Logs
 
-### 3. El servicio quedaba apuntando a una ruta vieja
+Runtime logs stay inside `logs\`:
 
-Sintoma:
+- `logs\orderbridge.log`
+- `logs\service-boot.log`
+- `logs\service-stdout.log`
+- `logs\service-stderr.log`
+- `logs\embedded_service.log`
 
-- `sc.exe qc OrderBridge` mostraba otro workspace en `BINARY_PATH_NAME`
+## Main config
 
-Causa:
+Environment settings live in `.env`.
 
-- habia una instalacion vieja en el SCM
+Important values:
 
-Solucion aplicada:
+- `GOODBARBER_APP_ID`
+- `GOODBARBER_API_KEY`
+- `API_HOST`
+- `API_PORT`
+- `GOODBARBER_SYNC_ENABLED`
+- `GOODBARBER_SYNC_INTERVAL_SECONDS`
+- `PRINTER_NAME`
 
-- el instalador ahora elimina el servicio previo
-- luego fuerza `ImagePath` al `pythonservice.exe` del proyecto actual
+If `PRINTER_NAME` is empty, the app falls back to:
 
-### 4. `PythonClass` quedaba mal registrado
-
-Sintoma:
-
-- `Python Service` reportaba `ModuleNotFoundError: No module named 'windows_service'`
-- o aparecia un `PicklingError` al instalar
-
-Causa:
-
-- `pywin32` mezcla distinto comportamiento cuando el servicio se registra desde `__main__`
-
-Solucion aplicada:
-
-- el instalador fuerza `PythonClass` a la ruta correcta del script actual:
-  `D:\orders\python-orderbridge\windows_service.OrderBridgeService`
-
-### 5. `pythonservice.exe` no arrancaba por DLL faltantes
-
-Sintoma:
-
-- error de sistema indicando que faltaba `python314.dll`
-- Windows solo mostraba `1053`
-
-Causa:
-
-- `pythonservice.exe` necesita los DLL del runtime y de `pywin32` en el root del `venv`
-
-Solucion aplicada:
-
-- `install_service.bat` detecta la version de Python
-- copia `pythonXY.dll`, `pythoncomXY.dll` y `pywintypesXY.dll` al root de `.venv`
-
-### 6. El servicio arrancaba y se apagaba enseguida
-
-Sintoma:
-
-- `START_PENDING`
-- luego `STOPPED`
-- log `OrderBridge uvicorn exited unexpectedly with code 2`
-
-Causa:
-
-- el wrapper estaba lanzando Uvicorn con `sys.executable`
-- dentro del servicio eso era `pythonservice.exe`, no `python.exe`
-
-Solucion aplicada:
-
-- `windows_service.py` ahora lanza Uvicorn con:
-  `.venv\Scripts\python.exe`
-
-### 7. El arranque podia tardar demasiado
-
-Sintoma:
-
-- `1053 The service did not respond...`
-
-Causa:
-
-- el sync inicial bloqueaba el startup de FastAPI
-
-Solucion aplicada:
-
-- el primer sync se encola en segundo plano con `asyncio.create_task(...)`
-- el servicio puede marcar `RUNNING` antes
-
-## Estructura relevante
-
-- `app/main.py`: arranque de FastAPI y scheduler
-- `windows_service.py`: wrapper del servicio de Windows
-- `install_service.bat`: instalacion y autoreparacion del servicio
-- `uninstall_service.bat`: desinstalacion del servicio
-
-## Endpoints
-
-- `GET /api/health`
-- `GET /api/orders`
-- `GET /api/orders/{order_id}`
-- `GET /api/orders/printers`
-- `POST /api/orders/{order_id}/print`
-- `PATCH /api/orders/{order_id}/status`
-- `POST /api/orders/webhook/goodbarber`
-- `POST /api/sync/goodbarber`
+1. the printer selected in the frontend
+2. the printer configured in `.env`
+3. the Windows default printer

@@ -9,3 +9,4 @@ query
 stop
 storage/orderbridge.db
 storage/print_pdfs/
+storage/settings.json

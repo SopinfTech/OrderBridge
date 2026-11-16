@@ -82,7 +82,11 @@ def upsert_order(db: Session, payload: dict) -> tuple[Order, bool]:
         order = Order(id=payload["id"])
         db.add(order)
 
-    preserve_status = order.status if order.status in {"printed", "done", "cancelled"} else payload["status"]
+    preserve_status = (
+        order.status
+        if order.status in {"printing", "printed", "print_failed", "done", "cancelled"}
+        else payload["status"]
+    )
     order.source = payload["source"]
     order.status = preserve_status
     order.reference = payload["reference"]

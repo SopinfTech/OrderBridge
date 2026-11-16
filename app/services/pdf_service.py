@@ -74,18 +74,7 @@ def generate_order_pdf(order: Order) -> Path:
 
 
 def build_header(order: Order, styles) -> Table:
-    merchant = order.raw_payload.get("merchant") if isinstance(order.raw_payload, dict) else {}
-    if not isinstance(merchant, dict):
-        merchant = {}
-
-    left_lines = [
-        merchant.get("name") or merchant.get("company_name") or "OrderBridge",
-        merchant.get("address_line1") or merchant.get("address") or settings.app_name,
-        merchant.get("address_line2") or merchant.get("city_state_zip") or "",
-        merchant.get("country") or "",
-        merchant.get("phone") or "",
-        merchant.get("email") or "",
-    ]
+    left_lines = build_merchant_lines(order)
     right_lines = [
         order.customer_name or "Cliente",
         clean_address(order.customer_address),
@@ -164,10 +153,6 @@ def build_items_table(order: Order, styles) -> Table:
 
 def build_totals_table(order: Order, styles) -> Table:
     data = [
-        ["Subtotal", money(order.subtotal, order.currency)],
-        ["Delivery", money(order.delivery, order.currency)],
-        ["Tax", money(order.tax, order.currency)],
-        ["Discount", money(-order.discount, order.currency)],
         ["TOTAL", money(order.total, order.currency)],
     ]
 
@@ -202,11 +187,11 @@ def build_footer_details(order: Order, styles) -> Table:
         or order.fulfillment_notes
         or ""
     )
-    delivery_time_slot = (
-        raw_payload.get("delivery_time_slot")
+    delivery_time_slot = format_delivery_slot(
+        raw_payload.get("selected_delivery_slot")
+        or raw_payload.get("delivery_time_slot")
         or raw_payload.get("delivery_window")
         or raw_payload.get("time_slot")
-        or "-"
     )
     delivery_address = (
         raw_payload.get("delivery_address")
@@ -214,17 +199,30 @@ def build_footer_details(order: Order, styles) -> Table:
         or order.customer_address
         or "-"
     )
-    payment_method = order.payment_method or raw_payload.get("payment_method") or "-"
-    delivery_method = order.fulfillment_method or raw_payload.get("delivery_method") or "-"
+    delivery_contact_lines = build_delivery_contact_lines(order, delivery_address)
+    payment_method = format_payment_method(
+        order.payment_method
+        or raw_payload.get("payment_method")
+        or raw_payload.get("payment_type")
+        or raw_payload.get("payment_mode")
+        or "-"
+    )
+    delivery_method = format_delivery_method(
+        order.fulfillment_method
+        or raw_payload.get("shipping_method")
+        or raw_payload.get("shipping_type")
+        or raw_payload.get("delivery_method")
+        or "-"
+    )
 
     left_block = Paragraph(
         f"""
         <b>Delivery time slot</b><br/>
-        {html_escape(delivery_method)}<br/>
-        {html_escape(delivery_time_slot)}<br/>
+        {delivery_method}<br/>
+        {delivery_time_slot}<br/>
         <br/>
         <b>Payment method</b><br/>
-        {html_escape(payment_method)}
+        {payment_method}
         {build_customer_note_html(customer_note)}
         """.strip(),
         styles["TopBlock"],
@@ -233,7 +231,7 @@ def build_footer_details(order: Order, styles) -> Table:
     right_block = Paragraph(
         f"""
         <b>Delivery address</b><br/>
-        {html_escape(clean_address(delivery_address)).replace(chr(10), '<br/>')}
+        {lines_to_html(delivery_contact_lines)}
         """.strip(),
         styles["SmallRight"],
     )
@@ -256,6 +254,89 @@ def build_footer_details(order: Order, styles) -> Table:
 def lines_to_html(lines: list[str]) -> str:
     cleaned = [html_escape(line) for line in lines if line]
     return "<br/>".join(cleaned) if cleaned else "-"
+
+
+def build_delivery_contact_lines(order: Order, delivery_address) -> list[str]:
+    address_text = clean_address(delivery_address)
+    return [
+        order.customer_name or "",
+        address_text if address_text != "-" else "",
+        order.customer_phone or "",
+        order.customer_email or "",
+    ]
+
+
+def build_merchant_lines(order: Order) -> list[str]:
+    raw_payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
+    merchant = first_dict(
+        raw_payload.get("merchant"),
+        raw_payload.get("store"),
+        raw_payload.get("shop"),
+        raw_payload.get("business"),
+        raw_payload.get("company"),
+        raw_payload.get("seller"),
+        raw_payload.get("vendor"),
+        raw_payload.get("pickup_store"),
+    )
+    merchant_address = first_dict(
+        raw_payload.get("merchant_address"),
+        raw_payload.get("store_address"),
+        raw_payload.get("pickup_address"),
+        merchant.get("address") if merchant else None,
+    )
+
+    return [
+        first_value(
+            merchant.get("name") if merchant else None,
+            merchant.get("company_name") if merchant else None,
+            settings.merchant_name,
+        ),
+        first_value(
+            merchant.get("address_line1") if merchant else None,
+            merchant_address.get("address_line1") if merchant_address else None,
+            merchant_address.get("address") if merchant_address else None,
+            settings.merchant_address_line1,
+        ),
+        first_value(
+            merchant.get("address_line2") if merchant else None,
+            merchant.get("city_state_zip") if merchant else None,
+            merchant_address.get("address_line2") if merchant_address else None,
+            merchant_address.get("localized_address") if merchant_address else None,
+            settings.merchant_address_line2,
+        ),
+        first_value(
+            merchant.get("country") if merchant else None,
+            merchant_address.get("country") if merchant_address else None,
+            settings.merchant_country,
+        ),
+        first_value(
+            merchant.get("phone") if merchant else None,
+            merchant_address.get("phone") if merchant_address else None,
+            settings.merchant_phone,
+        ),
+        first_value(
+            merchant.get("email") if merchant else None,
+            merchant_address.get("email") if merchant_address else None,
+            settings.merchant_email,
+        ),
+    ]
+
+
+def first_dict(*values) -> dict:
+    for value in values:
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def first_value(*values) -> str:
+    for value in values:
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if cleaned:
+            return cleaned
+    return ""
 
 
 def html_escape(value: str) -> str:
@@ -304,6 +385,38 @@ def build_customer_note_html(value: str) -> str:
     if not cleaned:
         return ""
     return f"<br/><br/><b>Customer note</b><br/>{html_escape(cleaned)}"
+
+
+def format_delivery_slot(value) -> str:
+    if isinstance(value, dict):
+        slot_date = str(value.get("date") or "").strip()
+        slot_start = str(value.get("slot_start") or value.get("start") or "").strip()
+        slot_end = str(value.get("slot_end") or value.get("end") or "").strip()
+        parts = [html_escape(part) for part in [slot_date, build_slot_range(slot_start, slot_end)] if part]
+        return "<br/>".join(parts) if parts else "-"
+
+    cleaned = " ".join(str(value or "").split()).strip()
+    return html_escape(cleaned) if cleaned else "-"
+
+
+def build_slot_range(start: str, end: str) -> str:
+    if start and end:
+        return f"Between {start} and {end}"
+    return start or end or ""
+
+
+def format_payment_method(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned or cleaned == "-":
+        return "-"
+    return html_escape(cleaned.replace("_", " ").title())
+
+
+def format_delivery_method(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned or cleaned == "-":
+        return "-"
+    return html_escape(cleaned.replace("_", " ").title())
 
 
 def format_order_date(value: datetime) -> str:

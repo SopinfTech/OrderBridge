@@ -1,7 +1,8 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -11,7 +12,14 @@ from app.db.session import get_db
 from app.schemas.orders import OrderListResponse, OrderRead, OrderResponse, UpdateStatusRequest
 from app.services.order_mapper import normalize_goodbarber_order
 from app.services.pdf_service import generate_order_pdf
-from app.services.print_service import list_printers, print_order, print_test_page
+
+from app.services.print_service import (
+    is_valid_printer,
+    list_printers,
+    print_order,
+    print_test_page,
+)
+
 from app.services.settings_service import get_selected_printer, set_selected_printer
 from app.services.sync_service import upsert_order
 from app.services.time_service import now_local_naive
@@ -49,33 +57,46 @@ def list_orders(status: str | None = None, db: Session = Depends(get_db)):
 
 @router.get("/printers")
 def get_printers(db: Session = Depends(get_db)):
-    payload = list_printers()
-    payload["selected_printer"] = get_selected_printer(db)
-    return payload
+    return list_printers()
 
 
 @router.post("/printers/select")
 def select_printer(body: dict, db: Session = Depends(get_db)):
     printer_name = str(body.get("printer_name") or "").strip()
+
     if not printer_name:
         raise HTTPException(status_code=400, detail="printer_name is required")
 
+    if not is_valid_printer(printer_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Printer is not available in Windows: {printer_name}",
+        )
+
     set_selected_printer(db, printer_name)
     db.commit()
+
     logger.info("Selected printer saved: %s", printer_name)
-    return {"selected_printer": printer_name}
+
+    return {
+        "ok": True,
+        "selected_printer": printer_name,
+    }
 
 
 @router.post("/printers/test")
-def test_printer(body: dict | None = None, db: Session = Depends(get_db)):
+def test_printer(body: dict | None = None):
     printer_name = ""
+
     if body:
         printer_name = str(body.get("printer_name") or "").strip()
-    if not printer_name:
-        printer_name = get_selected_printer(db)
 
     job = print_test_page(printer_name or None)
-    return {"ok": True, "job": job}
+
+    return {
+        "ok": True,
+        "job": job,
+    }
 
 
 @router.get("/{order_id}", response_model=OrderResponse)
@@ -90,15 +111,24 @@ def get_order(order_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{order_id}/pdf")
-def download_order_pdf(order_id: str, db: Session = Depends(get_db)):
+def download_order_pdf(
+    order_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     logger.info("GET /api/orders/%s/pdf", order_id)
+
     order = db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
     ).scalar_one_or_none()
+
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
     pdf_path = generate_order_pdf(order)
+
+    background_tasks.add_task(pdf_path.unlink, missing_ok=True)
+
     return FileResponse(
         path=pdf_path,
         media_type="application/pdf",
@@ -109,7 +139,9 @@ def download_order_pdf(order_id: str, db: Session = Depends(get_db)):
 @router.post("/webhook/goodbarber")
 def receive_goodbarber_webhook(payload: dict, db: Session = Depends(get_db)):
     logger.info("POST /api/orders/webhook/goodbarber payload_keys=%s", list(payload.keys()))
+
     normalized = normalize_goodbarber_order(payload)
+
     logger.info(
         "Webhook normalized order id=%s reference=%s status=%s created_at=%s total=%s items=%s",
         normalized["id"],
@@ -119,51 +151,102 @@ def receive_goodbarber_webhook(payload: dict, db: Session = Depends(get_db)):
         normalized["total"],
         len(normalized["items"]),
     )
+
     order, _ = upsert_order(db, normalized)
     job = None
+
     db.commit()
     db.refresh(order)
 
-    if order.status == "new":
+    if order.status in {"new", "pending_print", "print_failed"}:
         try:
+            order.status = "printing"
+            order.updated_at = now_local_naive()
+            db.commit()
+            db.refresh(order)
+
             logger.info("Printing webhook order reference=%s", order.reference)
+
             job = print_order(order)
+
             order.status = "printed"
             order.updated_at = now_local_naive()
             db.commit()
             db.refresh(order)
-        except Exception as error:
-            raise HTTPException(status_code=500, detail=f"Print failed: {error}") from error
 
-    return {"accepted": True, "order": serialize_order(order), "job": job}
+        except Exception as error:
+            order.status = "print_failed"
+            order.updated_at = now_local_naive()
+            db.commit()
+            db.refresh(order)
+
+            logger.exception("Print failed for order reference=%s", order.reference)
+
+            return {
+                "accepted": True,
+                "order": serialize_order(order),
+                "job": None,
+                "print_error": str(error),
+            }
+
+    return {
+        "accepted": True,
+        "order": serialize_order(order),
+        "job": job,
+    }
 
 
 @router.post("/{order_id}/print")
 def print_existing_order(order_id: str, db: Session = Depends(get_db)):
     logger.info("POST /api/orders/%s/print", order_id)
+
     order = db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
     ).scalar_one_or_none()
+
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
+    job = None
+
     try:
-        logger.info("Printing existing order reference=%s status=%s", order.reference, order.status)
+        logger.info(
+            "Printing existing order reference=%s status=%s",
+            order.reference,
+            order.status,
+        )
+
+        order.status = "printing"
+        order.updated_at = now_local_naive()
+        db.commit()
+        db.refresh(order)
+
         job = print_order(order)
+
         order.status = "printed"
         order.updated_at = now_local_naive()
         db.commit()
         db.refresh(order)
+
     except Exception as error:
+        order.status = "print_failed"
+        order.updated_at = now_local_naive()
+        db.commit()
+        db.refresh(order)
+
+        logger.exception("Print failed for order reference=%s", order.reference)
+
         raise HTTPException(status_code=500, detail=f"Print failed: {error}") from error
 
-    return {"order": serialize_order(order), "job": job}
-
+    return {
+        "order": serialize_order(order),
+        "job": job,
+    }
 
 @router.patch("/{order_id}/status", response_model=OrderResponse)
 def update_order_status(order_id: str, body: UpdateStatusRequest, db: Session = Depends(get_db)):
     logger.info("PATCH /api/orders/%s/status -> %s", order_id, body.status)
-    if body.status not in {"new", "printed", "done", "cancelled"}:
+    if body.status not in {"new", "printing", "printed", "print_failed", "done", "cancelled"}:
         raise HTTPException(status_code=400, detail="Invalid order status")
 
     order = db.execute(select(Order).where(Order.id == order_id)).scalar_one_or_none()

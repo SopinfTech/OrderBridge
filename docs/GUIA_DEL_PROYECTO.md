@@ -150,7 +150,7 @@ La aplicación no implementa autenticación en estas rutas. Por defecto escucha 
 
 `raw_payload` conserva el pedido recibido, que puede incluir datos personales. La base SQLite y los PDFs están dentro de `storage/`; proteger la carpeta y hacer copias de seguridad acordes con esos datos. `.env` contiene la credencial de GoodBarber y no debe publicarse.
 
-En la copia revisada, `.gitignore` excluye `.env`, logs, la base SQLite y `storage/print_pdfs/`, pero no excluye `storage/settings.json`. Revisar el estado de Git antes de publicar archivos de `storage/`; ese archivo puede revelar la impresora elegida localmente.
+`.gitignore` excluye `.env`, logs, la base SQLite, los PDFs generados y `storage/settings.json`. Este último archivo guarda la selección de impresora de la máquina y no forma parte del código publicado.
 
 ## Logs y diagnóstico
 
@@ -169,9 +169,9 @@ Los archivos de arranque y salida del servicio se abren en modo append y no tien
 3. **El arranque manual ignora `API_HOST` y `API_PORT`.** `run_embedded.bat` fija `127.0.0.1:8000`, mientras que el servicio Windows toma ambos valores de `.env`.
 4. **Un error de autoimpresión en la sincronización deja el pedido en `new`.** Con la impresión automática activa, una sincronización posterior puede intentar imprimirlo de nuevo. El webhook y la reimpresión sí registran `print_failed`.
 5. **Los logs del servicio no rotan.** La aplicación rota `orderbridge.log`, pero `service-stdout.log`, `service-stderr.log`, `service-boot.log` y `embedded_service.log` pueden crecer sin límite.
-6. **Falta `tzdata` en `requirements.txt`.** La distribución embebida revisada sí contiene `tzdata`; incluirla al reconstruir dependencias para conservar el soporte de zonas IANA en Windows.
+6. **Mantener dependencias sincronizadas.** `requirements.txt` ahora fija `tzdata==2026.2`, igual que la distribución embebida; actualizar ambos al reconstruir el runtime.
 7. **No hay migraciones de base de datos.** `create_all()` no modifica tablas ya existentes; respaldar la base antes de cambios de esquema.
-8. **No publicar datos locales.** `storage/settings.json` no está en las reglas actuales de exclusión de Git, aunque no se incluyó en esta guía.
+8. **No publicar datos locales.** La regla para excluir `storage/settings.json` se añadió al preparar la publicación del proyecto; la base de pedidos, los PDFs y los logs locales tampoco se incluyen.
 
 ## Reproducibilidad
 
